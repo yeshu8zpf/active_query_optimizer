@@ -1,0 +1,10 @@
+{
+    "badges": "b",
+    "users": "u",
+    "comments": "c",
+    "posthistory": "ph",
+    "votes": "v",
+    "posts": "p",
+    "postlinks": "pl",
+    "tags": "t"
+}

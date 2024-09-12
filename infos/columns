@@ -1,0 +1,61 @@
+{
+    "u": [
+        "id",
+        "reputation",
+        "creationdate",
+        "views",
+        "upvotes",
+        "downvotes"
+    ],
+    "p": [
+        "id",
+        "posttypeid",
+        "creationdate",
+        "score",
+        "viewcount",
+        "owneruserid",
+        "answercount",
+        "commentcount",
+        "favoritecount",
+        "lasteditoruserid"
+    ],
+    "pl": [
+        "id",
+        "creationdate",
+        "postid",
+        "relatedpostid",
+        "linktypeid"
+    ],
+    "ph": [
+        "id",
+        "posthistorytypeid",
+        "postid",
+        "creationdate",
+        "userid"
+    ],
+    "c": [
+        "id",
+        "postid",
+        "score",
+        "creationdate",
+        "userid"
+    ],
+    "v": [
+        "id",
+        "postid",
+        "votetypeid",
+        "creationdate",
+        "userid",
+        "bountyamount"
+    ],
+    "b": [
+        "id",
+        "userid",
+        "date"
+    ],
+    "t": [
+        "id",
+        "count",
+        "excerptpostid"
+    ]
+}
