@@ -1,5 +1,6 @@
 
-import psycopg2, re, json, os
+import datetime
+import psycopg2, re, json, os, time
 from psycopg2 import OperationalError
 
 def convert_time_to_int(date_string):

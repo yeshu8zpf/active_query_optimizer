@@ -140,6 +140,7 @@ def generate_connected_joins(graph, num_joins):
     
     return joins, tables
 
+
 def generate_random_sql(join_conditions, filter_conditions, num_joins_distribute, 
                         num_filters_distribute, rev_alias_map, M, num_sql=20000):
     """
@@ -176,14 +177,20 @@ def generate_random_sql(join_conditions, filter_conditions, num_joins_distribute
         sql_query += ', '.join(f'{rev_alias_map[table]} as {table}' for table in tables) + ' '
 
         # 构建 JOIN 子句
-        sql_query += 'WHERE ' + ' AND '.join(f'{join}' for join in generated_joins) + ' '
+        sql_query += 'WHERE ' + ' AND '.join(f'{join}' for join in generated_joins)
 
         # 生成 filter 子句
         where_conditions = []
         num_filters = random.choices(num_filters_distribute[0], weights=num_filters_distribute[1], k=1)[0]
-        for _ in range(num_filters):
-            filter_condition = random.choice(list(filter_conditions))
-            
+
+        # 从 filter_conditions 中随机选择 num_filters 个不重复的过滤条件
+        available_filters = list(filter_conditions)
+        random.shuffle(available_filters)  # 随机打乱过滤条件列表
+
+        for filter_condition in available_filters:
+            if len(where_conditions) >= num_filters:
+                break  # 已达到所需的过滤条件数量
+
             # 从 filter_condition 中提取表和列
             table, column = filter_condition.split('.')
             
@@ -201,7 +208,7 @@ def generate_random_sql(join_conditions, filter_conditions, num_joins_distribute
         
         # 将 WHERE 条件加入 SQL
         if where_conditions:
-            sql_query += " AND ".join(where_conditions) + ";"
+            sql_query += " AND " + " AND ".join(where_conditions) + ";"
         else:
             sql_query += ";"
         
@@ -210,9 +217,8 @@ def generate_random_sql(join_conditions, filter_conditions, num_joins_distribute
     
     return sql_queries
 
-
 if __name__ == '__main__':
-    sql_list = read_query('data/test/stats_simplified.txt')
+    sql_list = read_query('data/test/stats_test_sql.txt')
     join_conditions, filter_conditions, num_joins_distribute, num_filters_distribute = extract_conditions(sql_list)
     with open('infos/rev_alias_map', 'r') as f:
         rev_alias_map = json.load(f)
@@ -226,7 +232,7 @@ if __name__ == '__main__':
                         M, 
                         num_sql=20000)
     lines = [f"{i}#####{sql}\n" for i, sql in enumerate(sql_queries)]
-    with open('data/train_pool.txt', 'w') as f:
+    with open('data/unlabeled_train_data/stats_train_pool.txt', 'w') as f:
         f.writelines(lines)
     pass
     
