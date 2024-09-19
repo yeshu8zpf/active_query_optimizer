@@ -182,16 +182,13 @@ def generate_random_sql(join_conditions, filter_conditions, num_joins_distribute
         generated_joins, tables = generate_connected_joins(join_graph, num_joins)
         
         # 构建 SELECT 和 FROM 子句
-        select_clause = sql.SQL("SELECT COUNT(*) FROM ")
+        select_clause = "SELECT COUNT(*) FROM "
         # 构建 FROM 子句
         from_items = [
-            sql.SQL("{table_full} AS {alias}").format(
-                table_full=sql.Identifier(rev_alias_map[table]),
-                alias=sql.Identifier(table)
-            )
+            f"{rev_alias_map[table]} AS {table}"
             for table in tables
         ]
-        from_clause = sql.SQL(', ').join(from_items)
+        from_clause = ', '.join(from_items)
         
         # 构建 WHERE 子句
         where_conditions = []
@@ -201,12 +198,7 @@ def generate_random_sql(join_conditions, filter_conditions, num_joins_distribute
             left_expr, right_expr = join_condition.split('=')
             left_table, left_column = left_expr.split('.')
             right_table, right_column = right_expr.split('.')
-            condition = sql.SQL("{left_table}.{left_column} = {right_table}.{right_column}").format(
-                left_table=sql.Identifier(left_table),
-                left_column=sql.Identifier(left_column),
-                right_table=sql.Identifier(right_table),
-                right_column=sql.Identifier(right_column)
-            )
+            condition = f"{left_table}.{left_column} = {right_table}.{right_column}"
             where_conditions.append(condition)
         
         # 生成过滤条件
@@ -230,7 +222,6 @@ def generate_random_sql(join_conditions, filter_conditions, num_joins_distribute
             # 从 M 字典中获取该列的取值范围或可能的取值列表
             m_value = M[table.lower()][column.lower()]
 
-
             if isinstance(m_value, list):
                 if len(m_value) == 2 and all(isinstance(v, (int, float)) for v in m_value):
                     # 数值型列
@@ -238,25 +229,15 @@ def generate_random_sql(join_conditions, filter_conditions, num_joins_distribute
                     if min_val > max_val:
                         min_val, max_val = max_val, min_val  # 确保 min_val <= max_val
                     operator = random.choice(["=", "!=", ">", "<", ">=", "<="])
-                    value = random.randint(min_val, max_val)
-                    condition = sql.SQL("{table}.{column} {operator} {value}").format(
-                        table=sql.Identifier(table),
-                        column=sql.Identifier(column),
-                        operator=sql.SQL(operator),
-                        value=sql.Literal(value)
-                    )
+                    value = random.randint(int(min_val), int(max_val))
+                    condition = f"{table}.{column} {operator} {value}"
                     where_conditions.append(condition)
                     filter_count += 1
                 elif all(isinstance(v, str) for v in m_value):
                     # 字符串型列
                     operator = random.choice(["=", "!="])
-                    value = random.choice(m_value)
-                    condition = sql.SQL("{table}.{column} {operator} {value}").format(
-                        table=sql.Identifier(table),
-                        column=sql.Identifier(column),
-                        operator=sql.SQL(operator),
-                        value=sql.Literal(value)
-                    )
+                    value = random.choice(m_value).replace("'", "''")  # 防止单引号引起的错误
+                    condition = f"{table}.{column} {operator} '{value}'"
                     where_conditions.append(condition)
                     filter_count += 1
                 else:
@@ -270,17 +251,14 @@ def generate_random_sql(join_conditions, filter_conditions, num_joins_distribute
         sql_query = select_clause + from_clause
 
         if where_conditions:
-            where_clause = sql.SQL(' WHERE ') + sql.SQL(' AND ').join(where_conditions)
-            sql_query += where_clause + sql.SQL(';')  # 在末尾添加分号
+            where_clause = ' WHERE ' + ' AND '.join(where_conditions)
+            sql_query += where_clause + ';'  # 在末尾添加分号
         else:
-            sql_query += sql.SQL(';')  # 如果没有 WHERE 条件，直接加分号
+            sql_query += ';'  # 如果没有 WHERE 条件，直接加分号
 
-        # 将 SQL query 转换为字符串并添加到列表
-        sql_query_str = sql_query.as_string(connection)
-        sql_queries.append(sql_query_str)
+        sql_queries.append(sql_query)
     
     return sql_queries
-
 
 if __name__ == '__main__':
     database = 'stats'
