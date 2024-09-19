@@ -2,6 +2,8 @@ from model import LeroModel
 import json, os
 import numpy as np
 import argparse
+import logging
+logger = logging.getLogger('my_logger')
 
 def load_model(model_path=None):
     lero_model = LeroModel(None)
@@ -34,7 +36,6 @@ def get_lero_dict(model_path, plan_path, dir):
         y = lero_model.predict(local_features)
         y_list.append(y)
     
-    # print(y_list)   
     
     choice = [np.argmin(row) for row in y_list]
     
@@ -48,7 +49,6 @@ def get_lero_dict(model_path, plan_path, dir):
         sum += plan[0]['Execution Time']/1000 
     
     lero_dict['sum'] = sum
-    # print(lero_dict)
     
     with open(os.path.join(dir,'lero_dict.json'), 'w') as f:
         json.dump(lero_dict, f, indent=4)
@@ -80,19 +80,19 @@ def get_pg_dict(plan_path, dir):
 
 ####################################### new
 def test(model_path, plan_path, dir):
-    
     lero_model = load_model(model_path)
     plans_list = load_plans(plan_path)
     
     y_list, true_latencys_list = [], []
     for plans in plans_list:
         true_latencys = np.array([json.loads(plan)[0]['Execution Time']/1000 for plan in plans])
-        true_latencys_list.append(true_latencys)
+        true_latencys_list.append(np.array(true_latencys))
         local_features, _ = lero_model._feature_generator.transform(plans)
         y = lero_model.predict(local_features)
-        y_list.append(y)
+        y_list.append(y.squeeze())
     
     ranking_loss = compute_ranking_loss(y_list, true_latencys_list)
+    logger.info(f'ranking loss: {ranking_loss}')
 
     choice = [np.argmin(row) for row in y_list]
     
@@ -106,6 +106,7 @@ def test(model_path, plan_path, dir):
         sum += plan[0]['Execution Time']/1000 
     
     lero_dict['sum'] = sum
+    logger.info(f'total latency:{sum}s')
     
     with open(os.path.join(dir,'lero_dict.json'), 'w') as f:
         json.dump(lero_dict, f, indent=4)
@@ -113,6 +114,9 @@ def test(model_path, plan_path, dir):
 ########################################### new
 def compute_ranking_loss(y_list, true_latencys_list):
     from scipy.stats import spearmanr
+    import warnings
+    from scipy.stats import ConstantInputWarning
+    warnings.filterwarnings("error", category=ConstantInputWarning)
     """
     计算预测的排序损失（Spearman 相关系数的均值）。
 
@@ -128,16 +132,18 @@ def compute_ranking_loss(y_list, true_latencys_list):
     for y_pred, y_true in zip(y_list, true_latencys_list):
         # 检查长度是否一致
         assert len(y_pred) == len(y_true), "预测值和真实值的长度不一致。"
-
-        # 计算 Spearman 相关系数
-        coef, _ = spearmanr(y_pred, y_true)
+        try:
+            # 计算 Spearman 相关系数
+            coef, _ = spearmanr(y_pred, y_true)
+        except ConstantInputWarning as e:
+            logger.warning(f'捕获到警告：{e}')
         if np.isnan(coef):
             # 如果相关系数为 NaN（可能因为常数数组），则跳过
             continue
         spearman_corrs.append(coef)
 
     if len(spearman_corrs) == 0:
-        print("没有有效的 Spearman 相关系数计算结果。")
+        logger.info("没有有效的 Spearman 相关系数计算结果。")
         return None
 
     # 计算平均 Spearman 相关系数

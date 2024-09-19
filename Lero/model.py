@@ -217,7 +217,7 @@ class LeroModel():
         else:
             tree = self._net.build_trees(x)
 
-        pred = self._net(tree).cpu().detach().numpy()
+        pred = self._net(tree)[0].cpu().detach().numpy()
         return pred
 
 

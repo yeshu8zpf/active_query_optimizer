@@ -1,0 +1,15 @@
+2024-09-13 17:36:30,778 - INFO - Training data set size = 2511
+2024-09-13 17:39:26,697 - INFO - saving model to saved_models/stats/stable_model
+2024-09-13 17:44:37,339 - INFO - Training data set size = 2511
+2024-09-13 17:47:37,980 - INFO - saving model to saved_models/stats/stable_model
+2024-09-13 17:47:39,159 - INFO - ranking loss: 0.6132061967882863
+2024-09-13 17:47:39,166 - INFO - total latency:2990.285469000001s
+2024-09-14 09:37:06,471 - INFO - ranking loss: 0.6132061967882863
+2024-09-14 09:37:06,488 - INFO - total latency:2990.285469000001s
+2024-09-14 09:41:18,391 - INFO - ranking loss: 0.6132061967882863
+2024-09-14 09:41:18,398 - INFO - total latency:2990.285469000001s
+2024-09-14 11:39:21,902 - WARNING - 捕获到警告：An input array is constant; the correlation coefficient is not defined.
+2024-09-14 11:39:21,961 - WARNING - 捕获到警告：An input array is constant; the correlation coefficient is not defined.
+2024-09-14 11:39:21,962 - WARNING - 捕获到警告：An input array is constant; the correlation coefficient is not defined.
+2024-09-14 11:39:21,986 - INFO - ranking loss: 0.6107272289754042
+2024-09-14 11:39:21,993 - INFO - total latency:2990.285469000001s

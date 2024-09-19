@@ -1,10 +1,11 @@
 import argparse
 import math
 
-import torch
+import torch, logging
 
 from feature import *
 from model import LeroModel, LeroModelPairWise
+logger = logging.getLogger('my_logger')
 
 def _load_pointwise_plans(path):
     with open(path, "r") as f:
@@ -94,14 +95,14 @@ def training_pairwise(tuning_model_path, model_name, training_data_file, pretrai
     else:
         X1, Y1 = feature_generator.transform(X1)
         X2, Y2 = feature_generator.transform(X2)
-    print("Training data set size = " + str(len(X1)))
+    logger.info("Training data set size = " + str(len(X1)))
 
     if not tuning_model:
         assert lero_model == None
         lero_model = LeroModelPairWise(feature_generator)
     lero_model.fit(X1, X2, Y1, Y2, tuning_model)
 
-    print("saving model...")
+    logger.info(f"saving model to {model_name}")
     lero_model.save(model_name)
 
 

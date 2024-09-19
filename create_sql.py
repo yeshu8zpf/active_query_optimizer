@@ -1,5 +1,6 @@
-import re, os, random, json
+import re, os, random, json, psycopg2
 from collections import Counter, defaultdict
+from psycopg2 import OperationalError, sql
 
 def read_query(file):
     with open(file, 'r') as f:
@@ -7,13 +8,14 @@ def read_query(file):
         qs = [line.split('#####')[1] for line in lines]
     return qs
 
+
 def extract_conditions(sql_list):
     """
     从一组 SQL 语句中提取连接条件和筛选条件，返回集合形式。
-    
+
     参数:
     sql_list (list of str): 包含多条 SQL 语句的列表。
-    
+
     返回:
     tuple: 包含两个集合，第一个集合是所有连接条件，第二个集合是所有筛选条件中的 lefthand 表达式。
     """
@@ -24,25 +26,33 @@ def extract_conditions(sql_list):
 
     # 匹配连接条件 (e.g., a.a1 = b.b1)
     join_pattern = re.compile(r'(\w+\.\w+)\s*=\s*(\w+\.\w+)')
-    
-    # 匹配 WHERE 条件中的筛选条件 (e.g., a.a1 >= 10)
-    filter_pattern = re.compile(r'(\w+\.\w+)\s*(=|!=|>|<|>=|<=|LIKE|IN|BETWEEN|IS)\s*(?!\w+\.\w+)[^\s]+')
 
-    for i, sql in enumerate(sql_list):
-        # 将 SQL 转成小写
-        sql = sql.lower()
+    # 匹配 WHERE 条件中的筛选条件
+    filter_pattern = re.compile(
+        r'(\w+\.\w+)\s*'                             # Left-hand side (table.column)
+        r'(=|!=|>|<|>=|<=|LIKE|IN|BETWEEN|IS)\s*'    # Operator
+        r'('
+            r"'[^']*'"                                # Single-quoted string
+            r'|"[^"]*"'                               # Double-quoted string
+            r'|\([^\)]*\)'                            # Parentheses (e.g., subqueries or lists)
+            r'|[^;\s]+'                               # Other values (numbers, identifiers)
+        r')'
+    )
+
+    for sql in sql_list:
+        # 将 SQL 转成小写以匹配连接条件
+        sql_lower = sql.lower()
         
         # 提取连接条件 (通常出现在 ON 或 WHERE 中)
-        join_matches = join_pattern.findall(sql)
+        join_matches = join_pattern.findall(sql_lower)
         num_joins = len(join_matches)
         num_joins_list.append(num_joins)
         for match in join_matches:
             # 将等式左右部分排序，确保 a.a1=b.b1 和 b.b1=a.a1 被视为相同
             left, right = sorted([match[0], match[1]])
             join_conditions.add(f"{left}={right}")
-        
-        # 提取 WHERE 子句中的筛选条件
 
+        # 提取 WHERE 子句中的筛选条件（使用原始 SQL）
         filter_matches = filter_pattern.findall(sql)
         unique_filters = set([match[0] for match in filter_matches])
         num_filters = len(unique_filters)
@@ -56,7 +66,7 @@ def extract_conditions(sql_list):
     # 使用 Counter 统计每个 num_join 出现的次数
     num_joins_counter = Counter(num_joins_list)
 
-    # 将 num_joins_set 转换为排序列表（可选，根据需求）
+    # 将 num_joins_set 转换为排序列表
     unique_num_joins = sorted(num_joins_set)
 
     # 生成对应的 sql 数量列表
@@ -66,10 +76,10 @@ def extract_conditions(sql_list):
 
     num_filters_set = set(num_filters_list)
 
-    # 使用 Counter 统计每个 num_join 出现的次数
+    # 使用 Counter 统计每个 num_filter 出现的次数
     num_filters_counter = Counter(num_filters_list)
 
-    # 将 num_joins_set 转换为排序列表（可选，根据需求）
+    # 将 num_filters_set 转换为排序列表
     unique_num_filters = sorted(num_filters_set)
 
     # 生成对应的 sql 数量列表
@@ -77,8 +87,8 @@ def extract_conditions(sql_list):
 
     num_filters_distribute = (unique_num_filters, num_filters_counts)
 
-
     return join_conditions, filter_conditions, num_joins_distribute, num_filters_distribute
+
 
 
 def build_join_graph(join_conditions):
@@ -142,7 +152,7 @@ def generate_connected_joins(graph, num_joins):
 
 
 def generate_random_sql(join_conditions, filter_conditions, num_joins_distribute, 
-                        num_filters_distribute, rev_alias_map, M, num_sql=20000):
+                        num_filters_distribute, rev_alias_map, M, connection, num_sql=20000):
     """
     根据 join_conditions, filter_conditions 和字典 M 生成随机 SQL 查询。
     
@@ -152,7 +162,8 @@ def generate_random_sql(join_conditions, filter_conditions, num_joins_distribute
     num_joins_distribute (tuple): JOIN 数量的分布和权重。
     num_filters_distribute (tuple): WHERE 条件数量的分布和权重。
     rev_alias_map (dict): 表别名的映射，如 {"a": "table_a"}。
-    M (dict): 字典，记录每张表每列的最大最小值，如 M["a"]["a1"] = (1, 100)。
+    M (dict): 字典，记录每张表每列的最大最小值或可能的取值列表。
+    connection: psycopg2 的数据库连接，用于生成查询字符串。
     num_sql (int): 生成的 SQL 查询数量，默认为 20000。
     
     返回:
@@ -164,31 +175,50 @@ def generate_random_sql(join_conditions, filter_conditions, num_joins_distribute
     join_graph = build_join_graph(join_conditions)
     
     for _ in range(num_sql):
-        # 生成 SELECT 和 FROM 子句
-        sql_query = "SELECT COUNT(*) FROM "
-
         # 随机选择 JOIN 数量
         num_joins = random.choices(num_joins_distribute[0], weights=num_joins_distribute[1], k=1)[0]
         
         # 使用连通性保证 JOIN 条件的生成
         generated_joins, tables = generate_connected_joins(join_graph, num_joins)
         
+        # 构建 SELECT 和 FROM 子句
+        select_clause = sql.SQL("SELECT COUNT(*) FROM ")
         # 构建 FROM 子句
-        sql_query += ', '.join(f'{rev_alias_map[table]} as {table}' for table in tables) + ' '
-
-        # 构建 JOIN 子句
-        sql_query += 'WHERE ' + ' AND '.join(f'{join}' for join in generated_joins)
-
-        # 生成 filter 子句
+        from_items = [
+            sql.SQL("{table_full} AS {alias}").format(
+                table_full=sql.Identifier(rev_alias_map[table]),
+                alias=sql.Identifier(table)
+            )
+            for table in tables
+        ]
+        from_clause = sql.SQL(', ').join(from_items)
+        
+        # 构建 WHERE 子句
         where_conditions = []
-        num_filters = random.choices(num_filters_distribute[0], weights=num_filters_distribute[1], k=1)[0]
+        # 解析 JOIN 条件
+        for join_condition in generated_joins:
+            # join_condition 是类似 'a.a1=b.b1' 的字符串
+            left_expr, right_expr = join_condition.split('=')
+            left_table, left_column = left_expr.split('.')
+            right_table, right_column = right_expr.split('.')
+            condition = sql.SQL("{left_table}.{left_column} = {right_table}.{right_column}").format(
+                left_table=sql.Identifier(left_table),
+                left_column=sql.Identifier(left_column),
+                right_table=sql.Identifier(right_table),
+                right_column=sql.Identifier(right_column)
+            )
+            where_conditions.append(condition)
+        
+        # 生成过滤条件
+        num_filters = int(random.choices(num_filters_distribute[0], weights=num_filters_distribute[1], k=1)[0]*0.5) + 1
 
         # 从 filter_conditions 中随机选择 num_filters 个不重复的过滤条件
         available_filters = list(filter_conditions)
         random.shuffle(available_filters)  # 随机打乱过滤条件列表
 
+        filter_count = 0
         for filter_condition in available_filters:
-            if len(where_conditions) >= num_filters:
+            if filter_count >= num_filters:
                 break  # 已达到所需的过滤条件数量
 
             # 从 filter_condition 中提取表和列
@@ -197,42 +227,105 @@ def generate_random_sql(join_conditions, filter_conditions, num_joins_distribute
             if table not in tables:
                 continue  # 确保过滤条件应用在已连接的表上
             
-            # 从 M 字典中获取该列的最小值和最大值
-            min_val, max_val = M[table][column]
-            
-            # 生成随机过滤条件
-            operator = random.choice(["=", "!=", ">", "<", ">=", "<="])
-            value = random.randint(min_val, max_val)
-            
-            where_conditions.append(f"{filter_condition} {operator} {value}")
+            # 从 M 字典中获取该列的取值范围或可能的取值列表
+            m_value = M[table.lower()][column.lower()]
+
+
+            if isinstance(m_value, list):
+                if len(m_value) == 2 and all(isinstance(v, (int, float)) for v in m_value):
+                    # 数值型列
+                    min_val, max_val = m_value
+                    if min_val > max_val:
+                        min_val, max_val = max_val, min_val  # 确保 min_val <= max_val
+                    operator = random.choice(["=", "!=", ">", "<", ">=", "<="])
+                    value = random.randint(min_val, max_val)
+                    condition = sql.SQL("{table}.{column} {operator} {value}").format(
+                        table=sql.Identifier(table),
+                        column=sql.Identifier(column),
+                        operator=sql.SQL(operator),
+                        value=sql.Literal(value)
+                    )
+                    where_conditions.append(condition)
+                    filter_count += 1
+                elif all(isinstance(v, str) for v in m_value):
+                    # 字符串型列
+                    operator = random.choice(["=", "!="])
+                    value = random.choice(m_value)
+                    condition = sql.SQL("{table}.{column} {operator} {value}").format(
+                        table=sql.Identifier(table),
+                        column=sql.Identifier(column),
+                        operator=sql.SQL(operator),
+                        value=sql.Literal(value)
+                    )
+                    where_conditions.append(condition)
+                    filter_count += 1
+                else:
+                    print(f'data type {type(m_value[0])} is not defined')
+                    continue
+            else:
+                print(f'M[{table}][{column}] is not a list')
+                continue
         
-        # 将 WHERE 条件加入 SQL
+        # 构建完整的 SQL 查询
+        sql_query = select_clause + from_clause
+
         if where_conditions:
-            sql_query += " AND " + " AND ".join(where_conditions) + ";"
+            where_clause = sql.SQL(' WHERE ') + sql.SQL(' AND ').join(where_conditions)
+            sql_query += where_clause + sql.SQL(';')  # 在末尾添加分号
         else:
-            sql_query += ";"
-        
-        # 添加生成的 SQL 查询到列表中
-        sql_queries.append(sql_query)
+            sql_query += sql.SQL(';')  # 如果没有 WHERE 条件，直接加分号
+
+        # 将 SQL query 转换为字符串并添加到列表
+        sql_query_str = sql_query.as_string(connection)
+        sql_queries.append(sql_query_str)
     
     return sql_queries
 
+
 if __name__ == '__main__':
-    sql_list = read_query('data/test/stats_test_sql.txt')
+    database = 'stats'
+
+    sql_list = read_query(f'data/test/{database}_test_sql.txt')
     join_conditions, filter_conditions, num_joins_distribute, num_filters_distribute = extract_conditions(sql_list)
-    with open('infos/rev_alias_map', 'r') as f:
+    with open(f'infos/{database}/rev_alias_map', 'r') as f:
         rev_alias_map = json.load(f)
-    with open('infos/range_dict', 'r') as f:
+    with open(f'infos/{database}/range_dict', 'r') as f:
         M = json.load(f)
+
+    def create_connection(db_name, db_user, db_password, db_host, db_port):
+        connection = None
+        try:
+            connection = psycopg2.connect(
+                database=db_name,
+                user=db_user,
+                password=db_password,
+                host=db_host,
+                port=db_port
+            )
+            print("Connection to PostgreSQL DB successful")
+        except OperationalError as e:
+            print(f"The error '{e}' occurred")
+        return connection
+
+    # 使用你的数据库配置替换这些参数
+    db_name = database
+    db_user = "postgres"
+    db_password = "li6545991360"
+    db_host = "127.0.0.1"  # 本地主机，对于远程数据库，请使用IP地址或域名
+    db_port = "5432"  # PostgreSQL默认端口是5432
+
+    connection = create_connection(db_name, db_user, db_password, db_host, db_port)
     sql_queries = generate_random_sql(join_conditions,
                         filter_conditions, 
                         num_joins_distribute, 
                         num_filters_distribute, 
                         rev_alias_map, 
                         M, 
+                        connection,
                         num_sql=20000)
+    connection.close()
     lines = [f"{i}#####{sql}\n" for i, sql in enumerate(sql_queries)]
-    with open('data/unlabeled_train_data/stats_train_pool.txt', 'w') as f:
+    with open(f'data/unlabeled_train_data/{db_name}_train_pool.txt', 'w') as f:
         f.writelines(lines)
     pass
     
