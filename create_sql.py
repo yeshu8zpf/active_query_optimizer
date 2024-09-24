@@ -164,7 +164,7 @@ def generate_random_sql(join_conditions, filter_conditions, num_joins_distribute
             where_conditions.append(condition)
         
         # 2. 生成过滤条件
-        num_filters = int(random.choices(num_filters_distribute[0], weights=num_filters_distribute[1], k=1)[0])
+        num_filters = int(random.choices(num_filters_distribute[0], weights=num_filters_distribute[1], k=1)[0]*0.5)+1
     
         # 从 filter_conditions 中随机选择过滤条件
         available_filters = list(filter_conditions)
