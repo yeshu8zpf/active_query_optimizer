@@ -1,0 +1,59 @@
+{
+    "cast_info": [
+        "note"
+    ],
+    "company_name": [
+        "name",
+        "country_code"
+    ],
+    "role_type": [
+        "role"
+    ],
+    "title": [
+        "episode_nr",
+        "production_year",
+        "title"
+    ],
+    "company_type": [
+        "kind"
+    ],
+    "keyword": [
+        "keyword"
+    ],
+    "link_type": [
+        "link"
+    ],
+    "movie_companies": [
+        "note"
+    ],
+    "info_type": [
+        "info"
+    ],
+    "movie_info": [
+        "info",
+        "note"
+    ],
+    "movie_info_idx": [
+        "info"
+    ],
+    "kind_type": [
+        "kind"
+    ],
+    "name": [
+        "name",
+        "gender",
+        "name_pcode_cf"
+    ],
+    "comp_cast_type": [
+        "kind"
+    ],
+    "char_name": [
+        "name"
+    ],
+    "aka_name": [
+        "name"
+    ],
+    "person_info": [
+        "note"
+    ]
+}

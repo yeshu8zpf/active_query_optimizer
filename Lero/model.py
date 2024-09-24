@@ -43,15 +43,7 @@ def collate_fn(x):
     return trees, targets
 
 def collate_pairwise_fn(x):
-    trees1 = []
-    trees2 = []
-    labels = []
-
-    for tree1, tree2, label in x:
-        trees1.append(tree1)
-        trees2.append(tree2)
-        labels.append(label)
-    return trees1, trees2, labels
+    return zip(*x)
 
 
 def transformer(x: SampleEntity):
@@ -364,3 +356,165 @@ class LeroNet(nn.Module):
         self._cuda = True
         self.device = device
         return super().cuda()
+
+    
+class BayesianNet(nn.Module):
+    def __init__(self, input_feature_dim) -> None:
+        super(LeroNet, self).__init__()
+        self.input_feature_dim = input_feature_dim
+        self._cuda = False
+        self.device = None
+
+        self.tree_conv = nn.Sequential(
+            BinaryTreeConv(self.input_feature_dim, 256),
+            TreeLayerNorm(),
+            TreeActivation(nn.LeakyReLU()),
+            BinaryTreeConv(256, 128),
+            TreeLayerNorm(),
+            TreeActivation(nn.LeakyReLU()),
+            BinaryTreeConv(128, 64),
+            TreeLayerNorm(),
+            DynamicPooling(),
+        )
+
+
+    def forward(self, trees):
+        return self.tree_conv(trees)
+
+    def build_trees(self, feature):
+        return prepare_trees(feature, transformer, left_child, right_child, cuda=self._cuda, device=self.device)
+
+    def cuda(self, device):
+        self._cuda = True
+        self.device = device
+        return super().cuda()
+    
+def custom_nll_loss(logits, log_variance, targets, alpha):
+    # 将 logits 转换为概率
+    probs = torch.sigmoid(logits)
+    variance = torch.exp(log_variance)
+    # 计算损失
+    loss = alpha * (0.5 * log_variance + ((targets - probs) ** 2) / (2 * variance))
+    return loss.mean()
+
+class BayesianHead(nn.Modeule):
+    def __init__(self):
+        super().__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(128, 32),
+            nn.LeakyReLU(),
+            nn.Linear(32, 2)
+        )
+    def forward(self, x1, x2):
+        x = torch.concatenate(x1, x2)
+        x = self.fc(x)
+        x = torch.sigmoid(x)
+        return x[:, 0], x[:, 1]
+
+
+class BayesianModelPairWise(LeroModel):
+    def __init__(self, feature_generator, gamma=0.2, delta_threshold=0.1) -> None:
+        super().__init__(feature_generator)
+        self.gamma = gamma
+        self.delta_threshold = delta_threshold
+        self.head = BayesianHead()
+
+    def fit(self, X1, X2, Y1, Y2, pre_training=False):
+        assert len(X1) == len(X2) and len(Y1) == len(Y2) and len(X1) == len(Y1)
+        if isinstance(Y1, list):
+            Y1 = np.array(Y1)
+            Y1 = Y1.reshape(-1, 1)
+        if isinstance(Y2, list):
+            Y2 = np.array(Y2)
+            Y2 = Y2.reshape(-1, 1)
+        
+
+        # # determine the initial number of channels
+        if not pre_training:
+            input_feature_dim = len(X1[0].get_feature())
+            print("input_feature_dim:", input_feature_dim)
+
+            self.net = BayesianNet(input_feature_dim)
+            self._input_feature_dim = input_feature_dim
+            if CUDA:
+                self.net = self.net.cuda(device)
+                self.net = torch.nn.DataParallel(
+                    self.net, device_ids=GPU_LIST)
+                self.head = torch.nn.DataParallel(self.head, device_ids=GPU_LIST)
+                self.net.cuda(device)
+                self.head.cuda(device)
+
+        pairs = []
+        for i in range(len(X1)):
+            pairs.append((X1[i], X2[i], 1.0 if Y1[i] >= Y2[i] else 0.0, self.gamma if abs(Y1[i]-Y2[i]) < self.delta_threshold else 1. ))
+
+        batch_size = 64
+        if CUDA:
+            batch_size = batch_size * len(GPU_LIST)
+
+        dataset = DataLoader(pairs,
+                             batch_size=batch_size,
+                             shuffle=True,
+                             collate_fn=collate_pairwise_fn)
+
+        optimizer = None
+        if CUDA:
+            optimizer = torch.optim.Adam(list(self.net.module.parameters()) + list(self.head.module.parameters()))
+            optimizer = nn.DataParallel(optimizer, device_ids=GPU_LIST)
+        else:
+            optimizer = torch.optim.Adam(self.net.parameters())
+
+        losses = []
+        start_time = time()
+        for epoch in range(100):
+            loss_accum = 0
+            for x1, x2, label, alpha in dataset:
+
+                tree_x1, tree_x2 = None, None
+                if CUDA:
+                    tree_x1 = self.net.module.build_trees(x1)
+                    tree_x2 = self.net.module.build_trees(x2)
+                else:
+                    tree_x1 = self.net.build_trees(x1)
+                    tree_x2 = self.net.build_trees(x2)
+
+                # pairwise
+                inter_fea1 = self.net(tree_x1)
+                inter_fea2 = self.net(tree_x2)
+                prob, log_variance = self.head(inter_fea1, inter_fea2)
+
+                label_y = torch.tensor(np.array(label).reshape(-1, 1))
+                if CUDA:
+                    label_y = label_y.cuda(device)
+
+                loss = custom_nll_loss(prob, log_variance, label_y, alpha)
+                loss_accum += loss.item()
+
+                if CUDA:
+                    optimizer.module.zero_grad()
+                    loss.backward()
+                    optimizer.module.step()
+                else:
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+
+            loss_accum /= len(dataset)
+            losses.append(loss_accum)
+
+            print("Epoch", epoch, "training loss:", loss_accum)
+        print("training time:", time() - start_time, "batch size:", batch_size)
+
+    def get_inter_fea(self, x1, x2):
+        tree_x1, tree_x2 = None, None
+        if CUDA:
+            tree_x1 = self.net.module.build_trees(x1)
+            tree_x2 = self.net.module.build_trees(x2)
+        else:
+            tree_x1 = self.net.build_trees(x1)
+            tree_x2 = self.net.build_trees(x2)
+
+        # pairwise
+        _, inter_fea1 = self.net(tree_x1)
+        _, inter_fea2 = self.net(tree_x2)
+        return inter_fea1, inter_fea2

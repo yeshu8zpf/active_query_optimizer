@@ -196,9 +196,10 @@ def find_matching_template(query_sql, templates):
 
 
 if __name__ == "__main__":
+    database = 'stats'
     # 定义模板列表
     templates = []
-    templates_file = 'data/test/imdb_test_sql.txt'
+    templates_file = 'data/test/{database}_test_sql.txt'
     with open(templates_file, 'r') as f:
         lines = f.readlines()
     for line in lines:
@@ -206,7 +207,7 @@ if __name__ == "__main__":
 
     # 定义需要检查的 SQL 查询列表
     sql_queries = []
-    sql_file = 'data/labeled_train_data/imdb_train_sql.txt'
+    sql_file = f'data/labeled_train_data/{database}_train_sql.txt'
     with open(sql_file, 'r') as f:
         lines = f.readlines()
     for line in lines:
