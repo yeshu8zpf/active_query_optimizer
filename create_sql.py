@@ -46,13 +46,15 @@ def extract_conditions(sql_list):
     # 用于识别 table.column 格式的列名
     column_pattern = re.compile(r'^\w+\.\w+$')
 
-    for sql in sql_list:
+    for sql in sql_list[::-1]:
         # 提取连接条件 (转换为小写以匹配连接条件)
         sql_lower = sql.lower()
 
         # 提取连接条件 (通常出现在 ON 或 WHERE 中)
         join_matches = join_pattern.findall(sql_lower)
         num_joins = len(join_matches)
+        if num_joins > 4:
+            pass
         num_joins_list.append(num_joins)
         for match in join_matches:
             # 将等式左右部分排序，确保一致性
