@@ -108,17 +108,19 @@ def generate_random_sql(join_conditions, filter_conditions, num_filters_distribu
             if parent_x != parent_y:
                 parent[parent_y] = parent_x
         all_columns = set()
+        involved_tables = set()
         for join_condition in selected_join_condition.split(' AND '):
             left_expr, right_expr = join_condition.split('=')
             left_expr = left_expr.strip()
             right_expr = right_expr.strip()
             all_columns.add(left_expr)
             all_columns.add(right_expr)
+            involved_tables.add(left_expr.split('.')[0])
+            involved_tables.add(right_expr.split('.')[0])
             union(left_expr, right_expr)  # 合并等价类
         # 构建 SELECT 和 FROM 子句
         select_clause = "SELECT COUNT(*) FROM "
         # 从连接条件中提取涉及的表
-        involved_tables = {part.split('.')[0] for part in selected_join_condition.split(' AND ')}
 
         from_items = [
             f"{rev_alias_map[table]} AS {table}"
