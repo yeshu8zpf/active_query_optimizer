@@ -131,7 +131,7 @@ def generate_random_sql(join_conditions, filter_conditions, num_filters_distribu
         # 初始化 WHERE 条件列表
         join_clause = selected_join_condition
 
-        num_filters = random.choices(num_filters_distribute[0], weights=num_filters_distribute[1])[0]
+        num_filters = int(random.choices(num_filters_distribute[0], weights=num_filters_distribute[1])[0]*0.5 + 1)
         
         available_filters = list(filter_conditions)
         random.shuffle(available_filters)
