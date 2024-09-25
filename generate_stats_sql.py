@@ -237,7 +237,7 @@ if __name__ == '__main__':
                         num_filters_distribute, 
                         rev_alias_map, 
                         M, 
-                        num_sql=20000)
+                        num_sql=40000)
     lines = [f"{i}#####{sql}\n" for i, sql in enumerate(sql_queries)]
     with open(f'data/unlabeled_train_data/{database}_train_pool.txt', 'w') as f:
         f.writelines(lines)
