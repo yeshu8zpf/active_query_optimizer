@@ -83,7 +83,7 @@ def extract_conditions(sql_list):
 
     return join_conditions, filter_conditions, num_filters_distribute
 
-def generate_random_sql(join_conditions, filter_conditions, num_filters_distribute, rev_alias_map, M,  num_sql=20000):
+def generate_random_sql(join_conditions, filter_conditions, num_filters_distribute, rev_alias_map, M,  num_sql=40000):
     
     sql_queries = []
     
@@ -131,7 +131,7 @@ def generate_random_sql(join_conditions, filter_conditions, num_filters_distribu
         # 初始化 WHERE 条件列表
         join_clause = selected_join_condition
 
-        num_filters = int(random.choices(num_filters_distribute[0], weights=num_filters_distribute[1])[0]*0.5 + 1)
+        num_filters = int(random.choices(num_filters_distribute[0], weights=num_filters_distribute[1])[0])
         
         available_filters = list(filter_conditions)
         random.shuffle(available_filters)
@@ -175,7 +175,7 @@ def generate_random_sql(join_conditions, filter_conditions, num_filters_distribu
                     min_val, max_val = m_value
                     if min_val > max_val:
                         min_val, max_val = max_val, min_val  # 确保 min_val <= max_val
-                    operator = random.choices(["=", "!=", ">", "<", ">=", "<="], weights=[1,4,4,4,4,4])[0]
+                    operator = random.choices(["=", "!=", ">", "<", ">=", "<="], weights=[1,7,7,7,7,7])[0]
 
                     # 生成数值型条件
                     if isinstance(min_val, int) and isinstance(max_val, int) and min_val != max_val:
