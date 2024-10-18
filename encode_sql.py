@@ -248,7 +248,7 @@ if __name__ == "__main__":
     encodings = []
     for sql_query in sql_queries:
         encoding = encode_sql_query(sql_query, alias_map, new_range_dict, join_list, filter_list)
-        encodings.append(encodings)
+        encodings.append(encoding)
         # print(sql_query)
         # print("编码结果：", encoding[:len(join_list)])
         # print("编码结果：", encoding[len(join_list):])
