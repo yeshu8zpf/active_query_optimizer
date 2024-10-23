@@ -1,171 +1,216 @@
 import numpy as np
-import copy
+from copy import deepcopy
 from collections import defaultdict
 
-def augment_sql_encodings(sql_encodings, join_list, filter_columns, clusters, total_new_samples):
+def collect_filter_positions(node, filter_length, filter_positions):
     """
-    根据给定的 SQL 编码和聚类结果，按簇的占比分配新样本数量，生成扩充的数据集。
+    递归地收集节点特征中过滤值的位置。
 
     参数：
-    - sql_encodings: 原始 SQL 编码的列表，每个编码是一个向量，包含连接的 join embedding 和 filter embedding。
-    - join_list: 所有可能的连接条件列表。
-    - filter_columns: 过滤条件涉及的所有列的列表。
-    - clusters: 一个字典，键为簇的 ID，值为属于该簇的 SQL 编码的索引列表。
+    - node: 当前节点。
+    - filter_length: 过滤特征的长度。
+    - filter_positions: 用于收集过滤值位置的集合。
+    """
+    if node is None:
+        return
+
+    features = node.get_feature()
+
+    # 过滤特征位于特征向量的最后 filter_length 个元素
+    filter_features = features[-filter_length:]
+
+    # 每个过滤条件占据 7 个元素（6 个操作符 + 1 个过滤值）
+    num_filters = filter_length // 7
+
+    for i in range(num_filters):
+        start_idx = i * 7
+        operator_flags = filter_features[start_idx:start_idx + 6]
+        value_idx = start_idx + 6  # 第 7 个元素为过滤值
+
+        # 检查是否有操作符被设置为 1
+        if np.any(operator_flags):
+            # 记录过滤值的位置（在过滤特征中的索引）
+            filter_positions.add(value_idx)
+
+    # 递归遍历左子节点和右子节点
+    collect_filter_positions(node.left, filter_length, filter_positions)
+    collect_filter_positions(node.right, filter_length, filter_positions)
+
+def adjust_filters_in_tree(node, filter_length, adjustment_factors):
+    """
+    递归地调整节点特征中的过滤值，使用给定的调整因子。
+
+    参数：
+    - node: 当前节点。
+    - filter_length: 过滤特征的长度。
+    - adjustment_factors: 过滤值位置到调整因子的映射。
+    """
+    if node is None:
+        return
+
+    features = node.get_feature().copy()  # 复制以避免修改原始特征
+    filter_features = features[-filter_length:]
+
+    num_filters = filter_length // 7
+
+    for i in range(num_filters):
+        start_idx = i * 7
+        operator_flags = filter_features[start_idx:start_idx + 6]
+        value_idx = start_idx + 6  # 第 7 个元素为过滤值
+
+        # 检查是否有操作符被设置为 1
+        if np.any(operator_flags):
+            if value_idx in adjustment_factors:
+                factor = adjustment_factors[value_idx]
+                filter_features[value_idx] *= factor
+
+    features[-filter_length:] = filter_features
+    node.set_feature(features)
+
+    # 递归遍历左子节点和右子节点
+    adjust_filters_in_tree(node.left, filter_length, adjustment_factors)
+    adjust_filters_in_tree(node.right, filter_length, adjustment_factors)
+
+def augment_plan_pair_encodings(plan_pair_encodings, filter_length, clusters, total_new_samples):
+    """
+    通过同步调整过滤值，生成新的计划对编码。
+
+    参数：
+    - plan_pair_encodings: 原始的计划对编码列表，每个元素是一个包含两个树的元组。
+    - filter_length: 过滤特征的长度。
+    - clusters: 一个字典，键为簇的 ID，值为属于该簇的计划对的索引列表。
     - total_new_samples: 要生成的新样本总数。
 
     返回：
-    - augmented_encodings: 扩充后的 SQL 编码列表。
+    - augmented_plan_pairs: 扩充后的计划对编码列表。
     """
-    augmented_encodings = []
-    total_samples = sum(len(indices) for indices in clusters.values())
+    augmented_plan_pairs = []
 
-    # 计算每个簇的扩充样本数量
+    # 计算每个簇的大小和总的计划对数量
     cluster_sizes = {cluster_id: len(indices) for cluster_id, indices in clusters.items()}
-    total_original_samples = sum(cluster_sizes.values())
+    total_plan_pairs = sum(cluster_sizes.values())
 
-    # 计算每个簇的扩充比例，簇占比越高，扩充的样本数越少
-    cluster_proportions = {cluster_id: size / total_original_samples for cluster_id, size in cluster_sizes.items()}
+    # 计算每个簇的占比
+    cluster_proportions = {cluster_id: size / total_plan_pairs for cluster_id, size in cluster_sizes.items()}
 
-    # 计算每个簇需要生成的新样本数量
+    # 计算每个簇需要生成的新样本数量（簇占比越小，生成的样本数越多）
     total_proportions = sum(1 - proportion for proportion in cluster_proportions.values())
     cluster_new_samples = {
         cluster_id: int(((1 - proportion) / total_proportions) * total_new_samples)
         for cluster_id, proportion in cluster_proportions.items()
     }
 
-    # 如果由于取整导致总数不足，补充到总的新样本数
+    # 处理由于取整导致的样本数量不足问题
     allocated_samples = sum(cluster_new_samples.values())
     remaining_samples = total_new_samples - allocated_samples
     if remaining_samples > 0:
-        # 将剩余的样本随机分配给簇
         cluster_ids = list(clusters.keys())
-        for i in range(remaining_samples):
+        for _ in range(remaining_samples):
             cluster_id = np.random.choice(cluster_ids)
             cluster_new_samples[cluster_id] += 1
 
-    # 假设 join embedding 和 filter embedding 的长度
-    join_embedding_length = len(join_list)
-    filter_embedding_length = len(filter_columns) * 3  # 每个过滤列有三个值
-
+    # 对于每个簇
     for cluster_id, indices in clusters.items():
-        cluster_encodings = [sql_encodings[i] for i in indices]
-
-        # 计算当前簇需要生成的新样本数量
         num_new_samples = cluster_new_samples[cluster_id]
         if num_new_samples <= 0:
             continue
 
-        # 建立索引以便快速查找具有相同 join 和 filter 结构的 SQL 编码
-        encoding_dict = defaultdict(list)
+        plan_pairs_in_cluster = [plan_pair_encodings[i] for i in indices]
 
-        for encoding in cluster_encodings:
-            # 分割 join embedding 和 filter embedding
-            join_embedding = encoding[:join_embedding_length]
-            filter_embedding = encoding[join_embedding_length:]
+        # 计算每个计划对需要生成的新样本数量
+        num_plan_pairs = len(plan_pairs_in_cluster)
+        if num_plan_pairs == 0:
+            continue
 
-            # 提取 join 条件
-            join_conditions = tuple(join_embedding)
+        samples_per_pair = max(num_new_samples // num_plan_pairs, 1)
 
-            # 提取 filter 条件的结构（是否有过滤条件）
-            filter_structure = []
-            for i in range(0, len(filter_embedding), 3):
-                has_filter = filter_embedding[i]
-                filter_structure.append(has_filter)
-            filter_structure = tuple(filter_structure)
+        for plan_pair in plan_pairs_in_cluster:
+            left_tree, right_tree = plan_pair
 
-            key = (join_conditions, filter_structure)
-            encoding_dict[key].append(encoding)
+            for _ in range(samples_per_pair):
+                # 收集两个计划中的过滤值位置
+                filter_positions = set()
+                collect_filter_positions(left_tree, filter_length, filter_positions)
+                collect_filter_positions(right_tree, filter_length, filter_positions)
 
-        # 对于每个键，生成新样本
-        for key, encodings_list in encoding_dict.items():
-            if len(encodings_list) >= 2:
-                # 根据现有的过滤值范围生成新样本
-                # 首先，收集每个过滤列的值范围
-                filter_ranges = {}
-                for idx in range(len(filter_columns)):
-                    values = []
-                    for encoding in encodings_list:
-                        filter_embedding = encoding[join_embedding_length:]
-                        i = idx * 3
-                        has_filter = filter_embedding[i]
-                        if has_filter:
-                            lower_bound = filter_embedding[i + 1]
-                            upper_bound = filter_embedding[i + 2]
-                            values.append((lower_bound, upper_bound))
-                    if values:
-                        min_lower = min(v[0] for v in values)
-                        max_upper = max(v[1] for v in values)
-                        filter_ranges[idx] = (min_lower, max_upper)
+                # 为每个过滤位置生成相同的调整因子
+                adjustment_factors = {pos: np.random.uniform(0.9, 1.1) for pos in filter_positions}
 
-                # 根据需要的样本数量，生成新样本
-                samples_per_key = int(num_new_samples / len(encoding_dict))
-                for _ in range(samples_per_key):
-                    template_encoding = encodings_list[0]
-                    new_encoding = copy.deepcopy(template_encoding)
-                    filter_embedding = new_encoding[join_embedding_length:]
+                # 深拷贝原始树，避免修改原始数据
+                new_left_tree = deepcopy(left_tree)
+                new_right_tree = deepcopy(right_tree)
 
-                    for idx, (min_lower, max_upper) in filter_ranges.items():
-                        i = idx * 3
-                        has_filter = filter_embedding[i]
-                        if has_filter:
-                            # 在范围内随机生成新的下界和上界
-                            new_lower = np.random.uniform(min_lower, max_upper)
-                            new_upper = np.random.uniform(new_lower, max_upper)
-                            filter_embedding[i + 1] = new_lower
-                            filter_embedding[i + 2] = new_upper
+                # 在两个树中同步调整过滤值
+                adjust_filters_in_tree(new_left_tree, filter_length, adjustment_factors)
+                adjust_filters_in_tree(new_right_tree, filter_length, adjustment_factors)
 
-                    # 将修改后的 filter_embedding 赋值回去
-                    new_encoding[join_embedding_length:] = filter_embedding
-                    augmented_encodings.append(new_encoding)
-            else:
-                # 仅有一个编码，通过调整过滤值生成新样本
-                original_encoding = encodings_list[0]
-                samples_per_key = int(num_new_samples / len(encoding_dict))
-                for _ in range(samples_per_key):
-                    new_encoding = copy.deepcopy(original_encoding)
-                    filter_embedding = new_encoding[join_embedding_length:]
+                # 将新的计划对添加到列表中
+                augmented_plan_pairs.append((new_left_tree, new_right_tree))
 
-                    for idx in range(len(filter_columns)):
-                        i = idx * 3
-                        has_filter = filter_embedding[i]
-                        if has_filter:
-                            lower_bound = filter_embedding[i + 1]
-                            upper_bound = filter_embedding[i + 2]
-                            # 在一定范围内调整过滤值
-                            new_lower = lower_bound * np.random.uniform(0.9, 1.1)
-                            new_upper = upper_bound * np.random.uniform(0.9, 1.1)
-                            if new_lower > new_upper:
-                                new_lower, new_upper = new_upper, new_lower
-                            filter_embedding[i + 1] = new_lower
-                            filter_embedding[i + 2] = new_upper
+    return augmented_plan_pairs
 
-                    new_encoding[join_embedding_length:] = filter_embedding
-                    augmented_encodings.append(new_encoding)
+# 示例节点类
+class Node:
+    def __init__(self, feature, left=None, right=None):
+        self.feature = feature  # 节点特征向量
+        self.left = left        # 左子节点
+        self.right = right      # 右子节点
 
-    return augmented_encodings
+    def get_feature(self):
+        return self.feature
 
-# 示例数据
-sql_encodings = [
-    # 每个编码是一个向量，join embedding 和 filter embedding 已经连接
-    # 假设 join embedding 长度为 4，filter embedding 长度为 6（两个过滤列，每列3个值）
-    np.array([1, 0, 1, 0, 1, 10, 20, 1, 5, 15]),  # 编码 0
-    np.array([1, 0, 1, 0, 1, 15, 25, 1, 5, 15]),  # 编码 1
-    # 可以添加更多的原始 SQL 编码
-]
+    def set_feature(self, feature):
+        self.feature = feature
 
-join_list = ['a JOIN b ON a.id = b.id', 'b JOIN c ON b.id = c.id', 'c JOIN d ON c.id = d.id', 'd JOIN e ON d.id = e.id']
-filter_columns = ['a.a1', 'b.b1']
+# 示例使用
+if __name__ == "__main__":
+    # 原本的sample_entity需要在__init__函数中添加定义self.feature=None, 还需要添加方法set_feature(feature)
 
-# 示例聚类结果
-clusters = {
-    0: [0, 1],  # 簇 0 包含索引为 0 和 1 的 SQL 编码
-    # 可以添加更多的簇
-}
+    # 假设每个节点的特征向量长度为 13，过滤特征长度为 7（一个过滤列，6 个操作符 + 1 个过滤值）
+    filter_length = 7
 
-total_new_samples = 10  # 希望生成的新样本总数
+    # 创建示例树
+    # 创建叶子节点
+    # 过滤特征：[操作符标志（6 个），过滤值]
+    leaf_node1 = Node(np.array([1, 2, 3, 4, 5, 6, 0, 1, 0, 0, 0, 0, 0.3]))  # 有 '<' 操作符，值为 0.3
+    leaf_node2 = Node(np.array([1, 2, 3, 4, 5, 6, 1, 0, 0, 0, 0, 0, 0.5]))  # 有 '=' 操作符，值为 0.5
 
-augmented_encodings = augment_sql_encodings(sql_encodings, join_list, filter_columns, clusters, total_new_samples)
+    # 创建根节点
+    root_node1 = Node(np.array([1, 2, 3, 4, 5, 6, 0, 0, 1, 0, 0, 0, 0.7]), left=leaf_node1, right=leaf_node2)
 
-# 输出结果
-for encoding in augmented_encodings:
-    print(encoding)
+    # 创建另一个示例树
+    leaf_node3 = Node(np.array([1, 2, 3, 4, 5, 6, 0, 0, 0, 1, 0, 0, 0.2]))  # 有 '>' 操作符，值为 0.2
+    leaf_node4 = Node(np.array([1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 1, 0, 0.6]))  # 有 '>=' 操作符，值为 0.6
+
+    root_node2 = Node(np.array([1, 2, 3, 4, 5, 6, 1, 0, 0, 0, 0, 0, 0.8]), left=leaf_node3, right=leaf_node4)
+
+    # 创建计划对编码列表
+    plan_pair_encodings = [
+        (root_node1, root_node2),
+        # 可以添加更多的计划对
+    ]
+
+    # 示例聚类结果
+    clusters = {
+        0: [0],  # 簇 0 包含索引为 0 的计划对
+        # 可以添加更多的簇
+    }
+
+    total_new_samples = 5  # 希望生成的新样本总数
+
+    # 执行数据增强
+    augmented_plan_pairs = augment_plan_pair_encodings(plan_pair_encodings, filter_length, clusters, total_new_samples)
+
+    # 输出结果
+    print(f"原始计划对数量：{len(plan_pair_encodings)}")
+    print(f"扩充后的计划对数量：{len(augmented_plan_pairs)}")
+
+    # 可以检查增强后的计划对的节点特征
+    for idx, (left_tree, right_tree) in enumerate(augmented_plan_pairs):
+        print(f"\n增强后的计划对 {idx + 1}:")
+        print("左树根节点特征：", left_tree.get_feature())
+        print("左树左子节点特征：", left_tree.left.get_feature())
+        print("左树右子节点特征：", left_tree.right.get_feature())
+        print("右树根节点特征：", right_tree.get_feature())
+        print("右树左子节点特征：", right_tree.left.get_feature())
+        print("右树右子节点特征：", right_tree.right.get_feature())
